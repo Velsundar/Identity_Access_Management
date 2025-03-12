@@ -36,7 +36,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         try {
             const { appName } = request.body as { appName: string };
             const newApp = await registerApp(appName);
-            reply.send(successResponse("Application registered successfully", newApp, STATUS_CODES.created));
+            reply.send(successResponse("Application registered successfully", newApp, STATUS_CODES.ok));
         } catch (error: any) {
             reply.code(500).send({ error: error.message });
         }
