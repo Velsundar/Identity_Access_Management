@@ -7,27 +7,27 @@ import uuid from "v4-uuid";
 import ApplicationModel from "@/models/Application";
 import { generateCleanUUID, successResponse } from "@/utils/responseUtils";
 import UserModel from "@/models/user";
+import { STATUS_CODES } from "@/utils/responseCode";
 
 const authRoutes: FastifyPluginAsync = async (fastify) => {
-    fastify.post("/onboard-user", async (request, reply) => {
-        try {
-            const { email, appName, policies } = request.body as { 
-                email: string; 
-                appName: string; 
-                policies: string[]; 
+    fastify.post(
+        "/onboard-user",
+        handleRoute(async (req) => {
+            const { email, appName, policies } = req.body as {
+                email: string;
+                appName: string;
+                policies: string[];
             };
-    
-            if (!email || !appName || !policies || !Array.isArray(policies)) {
-                return reply.code(400).send({ error: "Email, appName, and policies (as an array) are required" });
+
+            if (!email || !appName || !Array.isArray(policies)) {
+                throw new Error("Email, appName, and policies (as an array) are required");
             }
-    
+
             const onboardResult = await onboardUser(email, appName, policies);
-    
-            reply.send(successResponse(onboardResult.message, onboardResult.user));
-        } catch (error: any) {
-            reply.code(500).send({ error: error.message });
-        }
-    });    
+
+            return successResponse(onboardResult.message, onboardResult.user, STATUS_CODES.ok);
+        })
+    );
         
     fastify.post(
         "/login",
@@ -58,7 +58,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
 
             await newApp.save();
 
-            reply.send(successResponse("Application registered successfully", newApp));
+            reply.send(successResponse("Application registered successfully", newApp, STATUS_CODES.ok));
         } catch (error: any) {
             reply.code(500).send({ error: error.message });
         }
