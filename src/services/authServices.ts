@@ -5,6 +5,7 @@ import { generateRandomOTP } from "@/utils/otpUtils";
 import PolicyModel from "@/models/policySchema";
 import jwt from "@/plugins/jwt";
 import { FastifyInstance } from "fastify";
+import { generateCleanUUID } from "@/utils/responseUtils";
 
 export const onboardUser = async (email: string, appName: string, policies: string[]) => {
     const app = await ApplicationModel.findOne({ appName }, { appId: 1 });
@@ -118,4 +119,24 @@ export const requestOTP = async (email: string) => {
             };
         }),
     };
+};
+
+export const registerApp = async (appName: string) => {
+    if (!appName) {
+        throw new Error("App name is required");
+    }
+
+    const existingApp = await ApplicationModel.findOne({ appName });
+    if (existingApp) {
+        throw new Error("Application already exists");
+    }
+
+    const newApp = new ApplicationModel({
+        appName,
+        clientId: generateCleanUUID(),
+        clientSecret: generateCleanUUID()
+    });
+
+    await newApp.save();
+    return newApp;
 };

@@ -1,12 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
 import { handleRoute } from "../utils/routeHandler";
-import { registerApplication } from "@/services/appServices";
-import { loginUser, onboardUser } from "@/services/authServices";
-import { authenticateApp } from "@/middleware/authMiddleware";
-import uuid from "v4-uuid";
-import ApplicationModel from "@/models/Application";
-import { generateCleanUUID, successResponse } from "@/utils/responseUtils";
-import UserModel from "@/models/user";
+import { loginUser, onboardUser, registerApp } from "@/services/authServices";
+import { successResponse } from "@/utils/responseUtils";
 import { STATUS_CODES } from "@/utils/responseCode";
 
 const authRoutes: FastifyPluginAsync = async (fastify) => {
@@ -40,29 +35,12 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
     fastify.post("/register-app", async (request, reply) => {
         try {
             const { appName } = request.body as { appName: string };
-
-            if (!appName) {
-                return reply.code(400).send({ error: "App name is required" });
-            }
-
-            const existingApp = await ApplicationModel.findOne({ appName });
-            if (existingApp) {
-                return reply.code(400).send({ error: "Application already exists" });
-            }
-
-            const newApp = new ApplicationModel({
-                appName,
-                clientId: generateCleanUUID(),
-                clientSecret: generateCleanUUID()
-            });
-
-            await newApp.save();
-
-            reply.send(successResponse("Application registered successfully", newApp, STATUS_CODES.ok));
+            const newApp = await registerApp(appName);
+            reply.send(successResponse("Application registered successfully", newApp, STATUS_CODES.created));
         } catch (error: any) {
             reply.code(500).send({ error: error.message });
         }
-    });
+    });    
 };
 
 export default authRoutes;
