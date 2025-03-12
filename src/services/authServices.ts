@@ -125,18 +125,16 @@ export const registerApp = async (appName: string) => {
     if (!appName) {
         throw new Error("App name is required");
     }
+    const existingApp = await ApplicationModel.findOne({ appName }).lean();
+    if (existingApp) {
+        throw new Error("Application already exists");
+    }
 
-    const newApp = await ApplicationModel.findOneAndUpdate(
-        { appName }, 
-        {
-            $setOnInsert: {
-                appName,
-                clientId: generateCleanUUID(),
-                clientSecret: generateCleanUUID(),
-            }
-        },
-        { new: true, upsert: true, lean: true }
-    );
+    const newApp = await ApplicationModel.create({
+        appName,
+        clientId: generateCleanUUID(),
+        clientSecret: generateCleanUUID(),
+    });
 
     return newApp;
 };
