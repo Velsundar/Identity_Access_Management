@@ -1,0 +1,30 @@
+{
+  "name": "@velos/iam-node",
+  "version": "0.0.0",
+  "description": "Server SDK for Velos IAM: verifyToken (JWKS), requireAuth middleware and admin API",
+  "license": "ISC",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@velos/iam-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.9",
+    "tsup": "^8.3.5",
+    "typescript": "^5.8.2"
+  }
+}

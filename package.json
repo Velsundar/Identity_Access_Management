@@ -1,45 +1,23 @@
 {
-  "name": "velos_iam",
+  "name": "velos-iam",
   "version": "1.0.0",
-  "description": "This is the Identity management Application",
-  "main": "dist/server.js",
-  "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only -r tsconfig-paths/register src/server.ts",
-    "build": "tsc && tsc-alias",
-    "start": "node dist/server.js",
-    "test": "vitest run"
-  },
-  "keywords": [
-    "IAM",
-    "Identity",
-    "Access",
-    "Management"
-  ],
+  "private": true,
+  "description": "Velos IAM — identity & access management platform and SDK (monorepo)",
   "author": "Sundaravel",
   "license": "ISC",
-  "dependencies": {
-    "@fastify/cors": "^10.0.1",
-    "@fastify/jwt": "^9.0.4",
-    "@fastify/swagger": "^9.4.0",
-    "@fastify/swagger-ui": "^5.2.0",
-    "bcryptjs": "^3.0.2",
-    "dotenv": "^16.4.7",
-    "fastify": "^5.2.1",
-    "fastify-plugin": "^5.0.1",
-    "mongoose": "^8.12.1",
-    "nodemailer": "^6.10.0",
-    "tsconfig-paths": "^4.2.0"
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
-    "@fastify/type-provider-typebox": "^5.1.0",
-    "@types/bcryptjs": "^2.4.6",
-    "@types/node": "^22.13.9",
-    "@types/nodemailer": "^6.4.17",
-    "mongodb-memory-server": "^10.1.4",
-    "ts-node": "^10.9.2",
-    "ts-node-dev": "^2.0.0",
-    "tsc-alias": "^1.8.10",
-    "typescript": "^5.8.2",
-    "vitest": "^3.0.5"
+    "turbo": "^2.3.3",
+    "typescript": "^5.8.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
   }
 }
