@@ -1,158 +1,186 @@
 # Velos IAM SDK — Plan
 
-> Goal: turn the `velos_iam` backend into a sellable **drop-in auth SDK** (Clerk/Auth0
-> style). A company with N apps installs the SDK in each app; users sign in once and
-> are recognized across all the company's apps (SSO), and each app reads the current
-> user with hooks like `useUser()` / `useClient()` and enforces its own policies.
+> Goal: turn the `velos_iam` backend into a sellable **drop-in auth + access SDK**
+> (Clerk/Auth0/Okta style). A company manages identity centrally; users sign in once and
+> see every app they can access (SSO launchpad); each app reads the current user via
+> hooks like `useUser()` / `useClient()` and enforces **route-level policies** defined as
+> JSON. Admins manage who can access which app and with which policies from an **IAM admin
+> console**.
 
-This is a planning document. Implementation will be incremental ("add on") in the
-phases below. No code is written yet.
+This is the design of record. Implementation is incremental ("add on") per the phases
+below.
+
+## Confirmed decisions
+- **Package scope:** `@velos/*`
+- **Branch for SDK work:** `feature/iam-sdk` (created at the start of Phase 0)
+- **Monorepo restructure:** yes — move the existing backend under `apps/backend`
+- **Next.js:** required (admin console + a Next.js SDK package)
+- **Policy model:** **Hybrid** — roles bundle permissions + route rules, with per-user
+  permission/route overrides
+- **Admin console:** build the Next.js dashboard UI as a first-class app
 
 ---
 
-## 1. Product shape (what the customer experiences)
+## 1. The three surfaces
 
-**Frontend (React):**
+1. **IAM admin console** (`apps/dashboard`, Next.js) — where the company's admins manage
+   **Organizations → Applications → Users → Roles → Policies**: grant which users can
+   access which applications, and define each role/user's permissions and **route access**
+   (edited/stored as JSON).
+2. **Account portal / SSO launchpad** (`apps/account-portal`, Next.js) — the central
+   sign-in. After login it **lists every app the user can access** as tiles and
+   **redirects into the chosen app already authenticated** (SSO).
+3. **The customer's apps** — install `@velos/iam-react` (or `@velos/iam-nextjs`) and read
+   the current user + enforce policies.
+
+---
+
+## 2. Developer experience (what the customer writes)
+
+**Frontend (React/Next.js):**
 ```tsx
-// once, at the app root
 <VelosProvider publishableKey="pk_live_xxx">
   <App />
 </VelosProvider>
 
-// anywhere
-const { user, isSignedIn, isLoaded } = useUser();
-const { signOut, getToken } = useAuth();
+const { user, isSignedIn } = useUser();
+const { has, signOut } = useAuth();
 
 <SignedIn><Dashboard /></SignedIn>
 <SignedOut><SignIn /></SignedOut>
-<Protect policy="billing:read"><Billing /></Protect>
+<Protect role="manager">       {/* role */}
+<Protect permission="billing:read"> {/* permission */}
 ```
 
-**Backend (the customer's own API):**
+**Backend (the customer's API):**
 ```ts
 import { requireAuth, getAuth } from "@velos/iam-node";
 
-app.get("/api/data", requireAuth(), (req, res) => {
-  const { userId, orgId, policies } = getAuth(req); // verified from the token
+app.get("/orders", requireAuth({ permission: "orders:read" }), (req, res) => {
+  const { userId, orgId, roles, permissions } = getAuth(req); // verified from token
 });
 ```
 
-The "import current user inside the client" you described = `useUser()` / `useClient()`,
-backed by a verified session token from the Velos backend.
+---
+
+## 3. Policy model (Hybrid RBAC + route overrides), as JSON
+
+**Roles are defined per Application** (a reusable bundle):
+```jsonc
+// Application.roles[]
+{
+  "name": "manager",
+  "permissions": ["orders:read", "orders:write", "billing:read"],
+  "routes": [
+    { "path": "/orders/**", "methods": ["GET", "POST"], "effect": "allow" },
+    { "path": "/admin/**",  "methods": ["*"],           "effect": "deny"  }
+  ]
+}
+```
+
+**A user's policy for an app** assigns roles + optional overrides:
+```jsonc
+// Policy { userId, appId, ... }
+{
+  "userId": "u_123",
+  "appId": "app_shop",
+  "roles": ["manager"],
+  "permissions": ["reports:read"],            // extra, on top of roles
+  "routes": [                                  // per-user overrides
+    { "path": "/billing/**", "methods": ["*"], "effect": "deny" }
+  ]
+}
+```
+
+**Effective access (evaluation engine):**
+- `permissions` = union of all assigned roles' permissions + user's extra permissions.
+- `routes` = roles' route rules, then user overrides layered on top.
+- **Resolution rules:** `deny` overrides `allow`; the **most specific path** wins; method
+  `*` matches any. Default is deny when nothing matches.
+- Exposed to the SDK via the token claims and a `/v1/client/me` payload so `has()` /
+  `<Protect>` / `requireAuth()` all evaluate consistently. A shared
+  `@velos/iam-core` evaluator is reused on client and server.
 
 ---
 
-## 2. Key architectural decisions
+## 4. Architecture
 
-### a) Publishable key vs secret key (browser safety)
-The browser must **never** hold `clientSecret`. We split credentials like Clerk:
-- **Publishable key** (`pk_...`) = the app's `clientId`, safe in the browser. Scopes
-  requests to one application; sent as a header to the Frontend API.
-- **Secret key** (`sk_...`) = the app's `clientSecret`, used **only** by `@velos/iam-node`
-  for admin calls and (optionally) token verification.
+### a) Publishable vs secret keys
+Browser holds only the **publishable key** (`pk_…` = `clientId`). The **secret key**
+(`sk_…` = `clientSecret`) is server-only (`@velos/iam-node`). Secret never ships to the browser.
 
-### b) Asymmetric tokens + JWKS (so anyone can verify offline)
-Switch JWT signing from the current shared HS256 secret to **RS256 (or EdDSA)** with a
-published **`/.well-known/jwks.json`**. The Node SDK and any resource server verify
-tokens with the public key — no shared secret to distribute. Critical for selling.
+### b) Asymmetric tokens + JWKS
+Sign JWTs with **RS256/EdDSA**, publish **`/.well-known/jwks.json`** so any resource
+server verifies tokens offline (replaces the current shared HS256 secret). Token carries
+`userId`, `orgId`, `appId`, `roles`, `permissions` (+ a route-policy hash/version).
 
 ### c) Sessions & cross-app SSO
-- The Velos backend becomes the **shared auth domain** (the "Frontend API"). The primary
-  session lives in an **httpOnly, Secure, SameSite cookie on the Velos domain**.
-- Each app's SDK, on load, calls `POST /v1/client/sessions` → if the shared cookie
-  exists, the backend mints a **short-lived app-scoped JWT (~5–15 min)** without
-  re-login. That's SSO across the company's 5 apps.
-- Access tokens are short-lived and held **in memory**; they're silently refreshed from
-  the shared cookie (no localStorage → XSS-resistant).
+- The Velos domain is the shared **Frontend API**; the primary session is an **httpOnly,
+  Secure, SameSite cookie** on that domain.
+- Each app's SDK calls `POST /v1/client/sessions` on load → if the shared cookie exists,
+  it mints a **short-lived (~5–15 min) app-scoped JWT** without re-login = SSO.
+- Access tokens live **in memory**, silently refreshed from the cookie (XSS-resistant).
 
-### d) Multi-tenancy ("a company with 5 apps")
-Add an **Organization (tenant)** concept so SSO is scoped correctly:
-- New `Organization { orgId, name }`.
-- `Application` gains `orgId` (which company owns it) + `allowedOrigins[]` (CORS).
-- `User` belongs to an org (membership). SSO is shared **only among apps of the same org**.
-- Policies stay per `(userId, appId)` — already a perfect fit, no change to the core model.
+### d) Multi-tenancy
+- New **`Organization { orgId, name }`** (the "company").
+- `Application` gains `orgId`, `allowedOrigins[]` (per-app CORS), and `roles[]`.
+- `User` belongs to an org (membership). SSO is shared **only across apps of the same org**.
 
 ---
 
-## 3. Monorepo layout
+## 5. Monorepo layout
 
-Convert the repo to a **pnpm workspace + Turborepo**, build packages with **tsup**
-(ESM + CJS + d.ts). The existing backend moves under `apps/backend`.
+pnpm workspaces + Turborepo; packages built with tsup (ESM + CJS + d.ts).
 
 ```
 apps/
-  backend/                # current Fastify IAM service (moved here)
-  example-shop/           # demo app #1  ─┐ share one login
-  example-admin/          # demo app #2  ─┘ to prove SSO
+  backend/          # Fastify IAM service (moved here): Frontend API + Management API
+  dashboard/        # Next.js — IAM admin console
+  account-portal/   # Next.js — SSO launchpad / central sign-in
+  example-shop/     # demo customer app  ─┐ prove SSO + policies
+  example-admin/    # demo customer app  ─┘
 packages/
-  iam-core/               # @velos/iam-core  — framework-agnostic client
-  iam-react/              # @velos/iam-react — provider, hooks, components
-  iam-node/               # @velos/iam-node  — token verify + admin + middleware
+  iam-core/         # @velos/iam-core   — client, session mgr, policy evaluator, events
+  iam-react/        # @velos/iam-react  — provider, hooks, control + prebuilt components
+  iam-nextjs/       # @velos/iam-nextjs — middleware, server components, route helpers
+  iam-node/         # @velos/iam-node   — verifyToken (JWKS), requireAuth, admin API
 docs/
 ```
 
-- `@velos/iam-core`: `VelosClient` class — HTTP client, session manager (load/refresh/
-  expiry), pluggable storage, an `onAuthChange` event emitter, `getToken()`. Pure TS,
-  runs in browser and Node.
-- `@velos/iam-react`: `<VelosProvider>`, hooks `useUser` / `useAuth` / `useClient` /
-  `useSession`, control components `<SignedIn>` `<SignedOut>` `<Protect>`, and **prebuilt
-  UI** `<SignIn>` `<SignUp>` `<UserButton>`. Thin layer over `iam-core` + React context.
-- `@velos/iam-node`: `verifyToken()` (via JWKS), `requireAuth()` middleware
-  (Express + Fastify adapters), `getAuth(req)`, plus admin helpers (create user, onboard,
-  manage policies) using the secret key.
+---
 
-> Package scope `@velos/*` is a placeholder — final brand/scope name TBD.
+## 6. Backend work
+
+**Frontend API** (CORS, publishable-key scoped): `/v1/client/sign-up`, `/sign-in`,
+`/verify-otp`, `/me`, `/sessions`, `/sessions/refresh`, `/sign-out`, `/.well-known/jwks.json`.
+
+**Management API** (secret-key / admin-session scoped, powers the dashboard):
+orgs, applications, users, **roles per app**, assign roles/policies to users, list a
+user's accessible apps (feeds the launchpad).
+
+**Cross-cutting:** RS256 keys + JWKS, httpOnly SSO cookie + CSRF, per-app origin
+allowlist, rate limiting, `Organization` model + `orgId` wiring, the shared **policy
+evaluation engine** in `@velos/iam-core` (reused by backend + SDKs).
 
 ---
 
-## 4. Backend changes required (to power the SDK)
+## 7. Phased delivery
 
-A new versioned **Frontend API** (CORS-enabled, scoped by publishable key):
-
-| Method | Endpoint                          | Purpose                                   |
-| ------ | --------------------------------- | ----------------------------------------- |
-| POST   | `/v1/client/sign-up`              | Email + password (or OTP) registration    |
-| POST   | `/v1/client/sign-in`              | Password / start OTP                       |
-| POST   | `/v1/client/verify-otp`           | Complete OTP sign-in                       |
-| GET    | `/v1/client/me`                   | **Current user** from the session token    |
-| POST   | `/v1/client/sessions`             | Mint app-scoped token (SSO via cookie)     |
-| POST   | `/v1/client/sessions/refresh`     | Rotate the short-lived access token        |
-| POST   | `/v1/client/sign-out`             | Clear session / cookie                     |
-| GET    | `/.well-known/jwks.json`          | Public keys for offline verification       |
-
-Supporting work:
-- RS256 key pair + key management (env / KMS later) and JWKS.
-- httpOnly SSO cookie on the Velos domain + CSRF protection for cookie refresh.
-- Per-app **origin allowlist** → dynamic CORS.
-- **Rate limiting** on auth endpoints (`@fastify/rate-limit`).
-- `Organization` model + wire `orgId` onto Application/User.
-- Reuse existing flows where possible (current `register`, `login`, OTP services map
-  almost 1:1 onto the new `/v1/client/*` handlers).
-
----
-
-## 5. Phased delivery (incremental)
-
-- **Phase 0 — Monorepo scaffold:** pnpm workspaces, Turborepo, tsup, shared tsconfig;
-  move backend to `apps/backend`; keep tests green.
-- **Phase 1 — Backend auth foundations:** RS256 + JWKS, `Organization` model,
-  publishable-key scoping, per-app CORS, `/v1/client/me`, rate limiting.
-- **Phase 2 — `@velos/iam-core`:** client, session manager, storage, events, token refresh.
+- **Phase 0 — Monorepo scaffold:** branch `feature/iam-sdk`; pnpm/Turbo/tsup; move backend
+  to `apps/backend`; keep tests green.
+- **Phase 1 — Backend foundations:** `Organization` model, RS256 + JWKS, publishable-key
+  scoping, per-app CORS, rate limiting, hybrid **policy schema** (roles on Application,
+  policy overrides on user) + evaluation engine, `/v1/client/me`.
+- **Phase 2 — `@velos/iam-core`:** client, session manager, token refresh, policy
+  evaluator, auth events.
 - **Phase 3 — `@velos/iam-react` (headless):** provider + `useUser`/`useAuth`/`useClient`,
   `<SignedIn>/<SignedOut>/<Protect>`.
 - **Phase 4 — Prebuilt UI:** `<SignIn>`, `<SignUp>`, `<UserButton>` (themeable).
-- **Phase 5 — `@velos/iam-node`:** `verifyToken`, `requireAuth` middleware, admin API.
-- **Phase 6 — SSO end-to-end:** shared-domain session + the two example apps sharing one
-  login (proves the "5 apps, one sign-in" story).
-- **Phase 7 — Release:** Changesets versioning, build/publish pipeline, docs; choose
+- **Phase 5 — `@velos/iam-node` + `@velos/iam-nextjs`:** `verifyToken`, `requireAuth`,
+  Next.js middleware/server helpers, admin API client.
+- **Phase 6 — Admin console (`apps/dashboard`):** manage orgs/apps/users/roles/policies,
+  JSON policy editor, access grants.
+- **Phase 7 — Account portal + SSO end-to-end:** launchpad listing accessible apps,
+  redirect-with-session; two example apps sharing one login to prove it.
+- **Phase 8 — Release:** Changesets versioning, build/publish pipeline, docs; choose
   registry (public npm vs private/licensed).
-
----
-
-## 6. Open items to confirm before Phase 0
-
-1. **Brand / package scope** — `@velos/*`? (drives package names everywhere).
-2. **Branch** — current branch name contains a disallowed word; SDK work should use a
-   clean branch (e.g. `feature/iam-sdk`). Needs explicit go-ahead to push there.
-3. **Monorepo restructure** — OK to move the existing backend into `apps/backend`?
-4. **Next.js package** — needed soon, or React-first is fine soon, Next later?
