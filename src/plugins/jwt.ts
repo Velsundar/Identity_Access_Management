@@ -1,17 +1,27 @@
 import fp from "fastify-plugin";
 import fastifyJwt from "@fastify/jwt";
-import { FastifyInstance } from "fastify";
+import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import { env } from "@/config/env";
+
+declare module "fastify" {
+  interface FastifyInstance {
+    authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+  }
+}
 
 export default fp(async (fastify: FastifyInstance) => {
   fastify.register(fastifyJwt, {
-    secret: process.env.JWT_SECRET!,
+    secret: env.jwtSecret,
   });
 
-  fastify.decorate("authenticate", async (request: { jwtVerify: () => any; }, reply: { send: (arg0: unknown) => void; }) => {
-    try {
-      await request.jwtVerify();
-    } catch (err) {
-      reply.send(err);
+  fastify.decorate(
+    "authenticate",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await request.jwtVerify();
+      } catch (err) {
+        reply.code(401).send({ error: "Unauthorized" });
+      }
     }
-  });
+  );
 });

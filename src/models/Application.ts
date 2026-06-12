@@ -1,6 +1,5 @@
 import { generateCleanUUID } from "@/utils/responseUtils";
-import mongoose, { Schema, Document } from "mongoose";
-import uuid from 'v4-uuid';
+import mongoose, { Schema } from "mongoose";
 
 const ApplicationSchema = new Schema({
     appName: { type: String, required: true, unique: true, sparse: true },

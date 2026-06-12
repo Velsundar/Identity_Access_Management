@@ -1,93 +1,98 @@
-import { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { FastifyPluginAsync } from "fastify";
+import { handleRoute } from "@/utils/routeHandler";
 import { requestOTP, verifyOTP } from "@/services/authServices";
 import UserModel from "@/models/user";
-import { generateRandomOTP } from "@/utils/otpUtils";
 import ApplicationModel from "@/models/Application";
 import PolicyModel from "@/models/policySchema";
 import { successResponse } from "@/utils/responseUtils";
 
 const appAuthRoutes: FastifyPluginAsync = async (fastify) => {
-    fastify.post("/request-otp", async (request, reply) => {
-        try {
-            const { email } = request.body as { email: string };
+  fastify.post(
+    "/request-otp",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["email"],
+          properties: { email: { type: "string", format: "email" } },
+        },
+      },
+    },
+    handleRoute(async (request) => {
+      const { email } = request.body as { email: string };
+      return requestOTP(email);
+    })
+  );
 
-            if (!email) return reply.code(400).send({ error: "Email is required" });
+  fastify.post(
+    "/verify-otp",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["email", "otp"],
+          properties: {
+            email: { type: "string", format: "email" },
+            otp: { type: "string" },
+          },
+        },
+      },
+    },
+    handleRoute(async (request) => {
+      const { email, otp } = request.body as { email: string; otp: string };
+      return verifyOTP(fastify, email, otp);
+    })
+  );
 
-            const user = await UserModel.findOne({ email });
-            if (!user) return reply.code(404).send({ error: "User not found" });
+  fastify.post(
+    "/remove-policies",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["email", "appName", "policies"],
+          properties: {
+            email: { type: "string", format: "email" },
+            appName: { type: "string" },
+            policies: { type: "array", items: { type: "string" }, minItems: 1 },
+          },
+        },
+      },
+    },
+    handleRoute(async (request) => {
+      const { email, appName, policies } = request.body as {
+        email: string;
+        appName: string;
+        policies: string[];
+      };
 
-            const otp = generateRandomOTP();
-            const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
+      const app = await ApplicationModel.findOne({ appName }, { appId: 1 });
+      if (!app) throw new Error("Application not found");
 
-            await UserModel.updateOne({ email }, { otp, otpExpiresAt });
+      const user = await UserModel.findOne({ email }, { userId: 1, email: 1 });
+      if (!user) throw new Error("User not found");
 
-            console.log(`OTP for ${email}: ${otp}`);
+      const userPolicy = await PolicyModel.findOne({ userId: user.userId, appId: app.appId });
+      if (!userPolicy) throw new Error("User is not onboarded to this app");
 
-            reply.send({ message: "OTP sent successfully" });
-        } catch (error: any) {
-            reply.code(400).send({ error: error.message });
-        }
-    });
-    fastify.post(
-        "/verify-otp",
-        async (request: FastifyRequest<{ Body: { email: string; otp: string } }>, reply: FastifyReply) => {
-            try {
-                const { email, otp } = request.body;
-                const response = await verifyOTP(fastify, email, otp);
-                reply.send(response);
-            } catch (err: any) {
-                reply.status(400).send({ error: err.message });
-            }
-        }
-    );
-    
-    
-    fastify.post("/remove-policies", async (request, reply) => {
-        try {
-            const { email, appName, policies } = request.body as {
-                email: string;
-                appName: string;
-                policies: string[];
-            };
+      const updatedPolicies = userPolicy.policies.filter((p) => !policies.includes(p));
 
-            if (!email || !appName || !Array.isArray(policies) || policies.length === 0) {
-                return reply.code(400).send({ error: "Email, appName, and an array of policies are required" });
-            }
+      if (updatedPolicies.length === 0) {
+        await PolicyModel.deleteOne({ userId: user.userId, appId: app.appId });
+      } else {
+        await PolicyModel.updateOne(
+          { userId: user.userId, appId: app.appId },
+          { policies: updatedPolicies }
+        );
+      }
 
-            // 🔍 Find the appId from Application collection
-            const app = await ApplicationModel.findOne({ appName }, { appId: 1 });
-            if (!app) return reply.code(404).send({ error: "Application not found" });
-
-            // 🔍 Find the userId from User collection
-            const user = await UserModel.findOne({ email }, { userId: 1 });
-            if (!user) return reply.code(404).send({ error: "User not found" });
-
-            // 🔍 Find the policy entry for the user and app
-            const userPolicy = await PolicyModel.findOne({ userId: user.userId, appId: app.appId });
-            if (!userPolicy) {
-                return reply.code(400).send({ error: "User is not onboarded to this app" });
-            }
-
-            // 🚀 Remove the selected policies
-            const updatedPolicies = userPolicy.policies.filter(p => !policies.includes(p));
-
-            if (updatedPolicies.length === 0) {
-                // ❌ If no policies left, remove the entire entry
-                await PolicyModel.deleteOne({ userId: user.userId, appId: app.appId });
-            } else {
-                // ✅ Update policy document
-                await PolicyModel.updateOne({ userId: user.userId, appId: app.appId }, { policies: updatedPolicies });
-            }
-
-            reply.send(successResponse("Policies removed successfully", {
-                email: user.email,
-                appName,
-                policies: updatedPolicies.length > 0 ? updatedPolicies : "No policies left",
-            }));
-        } catch (error: any) {
-            reply.code(500).send({ error: error.message });
-        }
-    });
+      return successResponse("Policies removed successfully", {
+        email: user.email,
+        appName,
+        policies: updatedPolicies,
+      });
+    })
+  );
 };
 
 export default appAuthRoutes;

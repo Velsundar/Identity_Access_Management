@@ -1,68 +1,83 @@
 import { FastifyPluginAsync } from "fastify";
-import { handleRoute } from "../utils/routeHandler";
+import { handleRoute } from "@/utils/routeHandler";
 import { registerApplication } from "@/services/appServices";
-import { loginUser, onboardUser } from "@/services/authServices";
-import { authenticateApp } from "@/middleware/authMiddleware";
-import uuid from "v4-uuid";
-import ApplicationModel from "@/models/Application";
-import { generateCleanUUID, successResponse } from "@/utils/responseUtils";
-import UserModel from "@/models/user";
+import { loginUser, onboardUser, registerUser } from "@/services/authServices";
+import { successResponse } from "@/utils/responseUtils";
+
+const emailPasswordSchema = {
+  body: {
+    type: "object",
+    required: ["email", "password"],
+    properties: {
+      email: { type: "string", format: "email" },
+      password: { type: "string", minLength: 6 },
+    },
+  },
+};
 
 const authRoutes: FastifyPluginAsync = async (fastify) => {
-    fastify.post("/onboard-user", async (request, reply) => {
-        try {
-            const { email, appName, policies } = request.body as { 
-                email: string; 
-                appName: string; 
-                policies: string[]; 
-            };
-    
-            if (!email || !appName || !policies || !Array.isArray(policies)) {
-                return reply.code(400).send({ error: "Email, appName, and policies (as an array) are required" });
-            }
-    
-            const onboardResult = await onboardUser(email, appName, policies);
-    
-            reply.send(successResponse(onboardResult.message, onboardResult.user));
-        } catch (error: any) {
-            reply.code(500).send({ error: error.message });
-        }
-    });    
-        
-    fastify.post(
-        "/login",
-        handleRoute(async (request) => {
-            const { username, password } = request.body as { username: string; password: string };
-            return loginUser(username, password, fastify.jwt.sign);
-        })
-    );
+  fastify.post(
+    "/register",
+    { schema: emailPasswordSchema },
+    handleRoute(async (request) => {
+      const { email, password } = request.body as { email: string; password: string };
+      const user = await registerUser(email, password);
+      return successResponse("User registered successfully", user);
+    })
+  );
 
-    fastify.post("/register-app", async (request, reply) => {
-        try {
-            const { appName } = request.body as { appName: string };
+  fastify.post(
+    "/login",
+    { schema: emailPasswordSchema },
+    handleRoute(async (request) => {
+      const { email, password } = request.body as { email: string; password: string };
+      return loginUser(email, password, fastify.jwt.sign);
+    })
+  );
 
-            if (!appName) {
-                return reply.code(400).send({ error: "App name is required" });
-            }
+  fastify.post(
+    "/onboard-user",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["email", "appName", "policies"],
+          properties: {
+            email: { type: "string", format: "email" },
+            appName: { type: "string" },
+            policies: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+    },
+    handleRoute(async (request) => {
+      const { email, appName, policies } = request.body as {
+        email: string;
+        appName: string;
+        policies: string[];
+      };
+      const result = await onboardUser(email, appName, policies);
+      return successResponse(result.message, result.user);
+    })
+  );
 
-            const existingApp = await ApplicationModel.findOne({ appName });
-            if (existingApp) {
-                return reply.code(400).send({ error: "Application already exists" });
-            }
-
-            const newApp = new ApplicationModel({
-                appName,
-                clientId: generateCleanUUID(),
-                clientSecret: generateCleanUUID()
-            });
-
-            await newApp.save();
-
-            reply.send(successResponse("Application registered successfully", newApp));
-        } catch (error: any) {
-            reply.code(500).send({ error: error.message });
-        }
-    });
+  fastify.post(
+    "/register-app",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["appName"],
+          properties: { appName: { type: "string" } },
+        },
+      },
+    },
+    handleRoute(async (request) => {
+      const { appName } = request.body as { appName: string };
+      const app = await registerApplication(appName);
+      return successResponse("Application registered successfully", app);
+    })
+  );
 };
 
 export default authRoutes;
